@@ -8,13 +8,12 @@ st.set_page_config(page_title="Interactive Quadrupole Mass Filter", layout="wide
 
 st.title("🔬 Interactive Quadrupole Mass Spectrometer Simulator")
 st.markdown("""
-This simulator demonstrates the operating principle of a **Quadrupole Mass Filter (QMF)**. 
-Adjust the voltages and frequency to see how they create a "stable tunnel" for specific ions 
-while causing others to crash into the rods.
+This simulator demonstrates the operating principle of a **Quadrupole Mass Filter (QMF)**.
+Use the controls to scan voltages or jump to specific masses to see how the "Stability Tunnel" changes.
 """)
 
 # --- SIDEBAR CONTROLS ---
-st.sidebar.header("1. Instrument Settings")
+st.sidebar.header("1. Instrument Configuration")
 
 # Physical Constants & Dimensions
 r0 = 0.005  # Radius of the field (meters) -> 5mm
@@ -22,18 +21,74 @@ length = 0.2 # Length of rods (meters) -> 20cm
 f_mhz = st.sidebar.slider("RF Frequency (MHz)", 0.5, 3.0, 1.0, 0.1)
 omega = 2 * np.pi * (f_mhz * 1e6)
 
-# Voltage Controls
-# We set a target mass to auto-tune the voltages initially, but allow manual override
-target_mz_guess = 100.0
-# Approximate "Apex" of stability diagram values (a=0.237, q=0.706) roughly
-# This helps the user start with a working simulation
-u_init = (0.237 * target_mz_guess * 1.66e-27 * omega**2 * r0**2) / (8 * 1.602e-19)
-v_init = (0.706 * target_mz_guess * 1.66e-27 * omega**2 * r0**2) / (4 * 1.602e-19)
+# Constants for Mathieu Equation Stability (Approx Apex of Stability Diagram)
+# These define the tip of the stability triangle where resolution is highest.
+TARGET_A = 0.23699  # Mathieu parameter a
+TARGET_Q = 0.70600  # Mathieu parameter q
+# Mass of proton/neutron in kg
+AMU_KG = 1.66053907e-27
+CHARGE = 1.60217663e-19
 
-U = st.sidebar.number_input("DC Voltage (U) [Volts]", value=float(f"{u_init:.2f}"), step=0.5)
-V = st.sidebar.number_input("RF Voltage (V) [Volts]", value=float(f"{v_init:.2f}"), step=1.0)
+# Helper: Calculate Voltages from Mass
+def calculate_voltages(target_mass_amu):
+    mass_kg = target_mass_amu * AMU_KG
+    # V = (q * m * r0^2 * omega^2) / (4 * e)
+    V_calc = (TARGET_Q * mass_kg * (r0**2) * (omega**2)) / (4 * CHARGE)
+    # U = (a * m * r0^2 * omega^2) / (8 * e)
+    U_calc = (TARGET_A * mass_kg * (r0**2) * (omega**2)) / (8 * CHARGE)
+    return U_calc, V_calc
 
-st.sidebar.header("2. Ion Parameters")
+# Helper: Calculate Mass from RF Voltage (V) assuming apex q
+def calculate_mass_from_V(V_input):
+    # m = (4 * e * V) / (q * r0^2 * omega^2)
+    m_kg = (4 * CHARGE * V_input) / (TARGET_Q * (r0**2) * (omega**2))
+    return m_kg / AMU_KG
+
+# --- CONTROL MODES ---
+st.sidebar.header("2. Voltage Control Mode")
+control_mode = st.sidebar.radio(
+    "Select Mode:", 
+    ["Manual Independent", "Linked Scan (Ratio)", "Auto-Tune (Target m/z)"]
+)
+
+# Initialize variables to avoid scope errors
+U, V = 0.0, 0.0
+
+if control_mode == "Manual Independent":
+    st.sidebar.markdown("**Manual Mode:** Adjust DC and RF independently.")
+    U = st.sidebar.number_input("DC Voltage (U) [Volts]", value=70.0, step=0.5)
+    V = st.sidebar.number_input("RF Voltage (V) [Volts]", value=415.0, step=1.0)
+
+elif control_mode == "Linked Scan (Ratio)":
+    st.sidebar.markdown("**Scan Mode:** Adjusting RF automatically sets DC to maintain constant resolution.")
+    
+    # Calculate the ratio needed for the apex
+    scan_ratio = TARGET_A / (2 * TARGET_Q) # Approx 0.1678
+    
+    # Slider for V (RF)
+    V = st.sidebar.slider("RF Voltage (V)", min_value=0.0, max_value=3000.0, value=415.0, step=1.0)
+    # Calculate U based on fixed ratio
+    U = V * scan_ratio
+    
+    # Display the derived value
+    st.sidebar.info(f"**Linked DC Voltage (U):** {U:.2f} V")
+    
+    # Show what mass this corresponds to
+    current_mass = calculate_mass_from_V(V)
+    st.sidebar.caption(f"Currently tuned for approx: **{current_mass:.1f} amu**")
+
+elif control_mode == "Auto-Tune (Target m/z)":
+    st.sidebar.markdown("**Auto-Tune:** Enter a mass, and the simulator calculates the required voltages.")
+    
+    target_mz = st.sidebar.number_input("Target m/z (amu)", value=100.0, step=1.0)
+    
+    # Calculate required U and V
+    U, V = calculate_voltages(target_mz)
+    
+    st.sidebar.success(f"**Calculated Settings:**\n\nDC (U): {U:.2f} V\n\nRF (V): {V:.2f} V")
+
+# --- ION PARAMETERS ---
+st.sidebar.header("3. Ion Parameters")
 v_z = st.sidebar.slider("Initial Axial Velocity (m/s)", 1000, 5000, 2500, 100)
 
 st.sidebar.subheader("Define 3 Ions (m/z)")
@@ -41,61 +96,36 @@ m1 = st.sidebar.number_input("Ion 1 Mass (amu) - (Blue)", value=90.0, step=1.0)
 m2 = st.sidebar.number_input("Ion 2 Mass (amu) - (Green)", value=100.0, step=1.0)
 m3 = st.sidebar.number_input("Ion 3 Mass (amu) - (Red)", value=110.0, step=1.0)
 
-# --- PHYSICS ENGINE ---
-
+# --- PHYSICS ENGINE (Unchanged) ---
 def mathieu_derivs(state, t, e_over_m, U, V, omega, r0):
-    """
-    Computes derivatives for the equations of motion in a quadrupole field.
-    State vector: [x, vx, y, vy]
-    Equations derived from Mathieu equation forms:
-    d2x/dt2 + (e/m * r0^2) * (U + V*cos(wt)) * x = 0
-    d2y/dt2 - (e/m * r0^2) * (U + V*cos(wt)) * y = 0
-    """
     x, vx, y, vy = state
-    
-    # Potential factor Phi_0 = U + V cos(omega * t)
-    # Force F = qE = -q * gradient(Phi)
-    # acceleration a = F/m
-    
-    # The coefficient commonly used is k = 2 * e / (m * r0^2)
-    # However, strictly: d2x/dt2 + (2e/mr0^2)(U + Vcos(wt))x = 0 is a common approximation
-    
-    k = (2 * 1.60217663e-19) / (e_over_m * r0**2)
+    k = (2 * CHARGE) / (e_over_m * r0**2)
     phi = U + V * np.cos(omega * t)
-    
     ax = -k * phi * x
-    ay = k * phi * y  # Note the sign change for the quadrupole field in Y
-    
+    ay = k * phi * y 
     return [vx, ax, vy, ay]
 
 def simulate_ion(mass_amu, U, V, omega, r0, length, v_z):
-    mass_kg = mass_amu * 1.66053907e-27
-    
-    # Time to traverse the rods
+    mass_kg = mass_amu * AMU_KG
     total_time = length / v_z
     t_eval = np.linspace(0, total_time, 1000)
     
-    # Initial conditions: small random offset from center to simulate real beam width
-    # x0, vx0, y0, vy0
+    # Initial conditions: small random offset
     init_state = [0.0005, 0, 0.0005, 0] 
     
     sol = odeint(mathieu_derivs, init_state, t_eval, args=(mass_kg, U, V, omega, r0))
     
-    x = sol[:, 0]
-    y = sol[:, 2]
+    x, y = sol[:, 0], sol[:, 2]
     z = v_z * t_eval
     
-    # Check if ion crashed (distance from center > r0)
+    # Check crash
     radial_dist = np.sqrt(x**2 + y**2)
     crashed_indices = np.where(radial_dist > r0)[0]
     
     status = "Transmitted"
     if len(crashed_indices) > 0:
         crash_idx = crashed_indices[0]
-        # Truncate arrays at crash point
-        x = x[:crash_idx]
-        y = y[:crash_idx]
-        z = z[:crash_idx]
+        x, y, z = x[:crash_idx], y[:crash_idx], z[:crash_idx]
         status = "Crashed"
         
     return x, y, z, status
@@ -107,111 +137,69 @@ ions = [
     {"mass": m3, "color": "red", "name": f"Ion C ({m3} amu)"},
 ]
 
-# Run simulation for each ion
 for ion in ions:
     x, y, z, status = simulate_ion(ion["mass"], U, V, omega, r0, length, v_z)
-    ion["x"] = x
-    ion["y"] = y
-    ion["z"] = z
-    ion["status"] = status
+    ion["x"], ion["y"], ion["z"], ion["status"] = x, y, z, status
 
 # --- VISUALIZATION ---
-
-# Create 3D Plot
 fig = go.Figure()
 
-# Add Quadrupole Rods (Visual representation only - Wireframe)
-# Simplified as 4 lines for performance
+# Rods
 rod_len = np.linspace(0, length, 10)
-rod_offset = r0 * 1.1 # slightly larger than field radius
+rod_offset = r0 * 1.1
 for ang in [0, np.pi/2, np.pi, 3*np.pi/2]:
-    rx = rod_offset * np.cos(ang)
-    ry = rod_offset * np.sin(ang)
+    rx, ry = rod_offset * np.cos(ang), rod_offset * np.sin(ang)
     fig.add_trace(go.Scatter3d(
         x=[rx]*10, y=[ry]*10, z=rod_len,
         mode='lines', line=dict(color='gray', width=5),
         name='Rod', showlegend=False, hoverinfo='skip'
     ))
 
-# Add Ion Trajectories
+# Ions
 for ion in ions:
-    # Trajectory
     fig.add_trace(go.Scatter3d(
         x=ion["x"], y=ion["y"], z=ion["z"],
-        mode='lines',
-        line=dict(color=ion["color"], width=4),
+        mode='lines', line=dict(color=ion["color"], width=4),
         name=f"{ion['name']} - {ion['status']}"
     ))
-    
-    # End Point Marker
     fig.add_trace(go.Scatter3d(
         x=[ion["x"][-1]], y=[ion["y"][-1]], z=[ion["z"][-1]],
-        mode='markers',
-        marker=dict(size=5, color=ion["color"]),
-        showlegend=False
+        mode='markers', marker=dict(size=5, color=ion["color"]), showlegend=False
     ))
 
 fig.update_layout(
-    title="3D Ion Trajectories",
+    title=f"3D Ion Trajectories (U={U:.1f}V, V={V:.1f}V)",
     scene=dict(
-        xaxis_title="X Position (m)",
-        yaxis_title="Y Position (m)",
-        zaxis_title="Z Position (m) - Along Rods",
-        aspectratio=dict(x=1, y=1, z=3), # Elongate Z axis for better view
-        xaxis=dict(range=[-r0*2, r0*2]),
-        yaxis=dict(range=[-r0*2, r0*2]),
+        xaxis_title="X (m)", yaxis_title="Y (m)", zaxis_title="Z (m)",
+        aspectratio=dict(x=1, y=1, z=3),
+        xaxis=dict(range=[-r0*2, r0*2]), yaxis=dict(range=[-r0*2, r0*2]),
     ),
-    margin=dict(l=0, r=0, b=0, t=40),
-    height=600
+    margin=dict(l=0, r=0, b=0, t=40), height=600
 )
 
-# --- 2D Cross Section View ---
+# 2D Plot
 fig_2d = go.Figure()
-
-# Draw the limit circle
 theta = np.linspace(0, 2*np.pi, 100)
 fig_2d.add_trace(go.Scatter(
     x=r0*np.cos(theta), y=r0*np.sin(theta),
-    mode='lines', line=dict(color='black', dash='dash'), name='Rod Boundary'
+    mode='lines', line=dict(color='black', dash='dash'), name='Rod Limit'
 ))
-
 for ion in ions:
     fig_2d.add_trace(go.Scatter(
         x=ion["x"], y=ion["y"],
-        mode='lines', line=dict(color=ion["color"]),
-        name=ion['name']
+        mode='lines', line=dict(color=ion["color"]), name=ion['name']
     ))
-
 fig_2d.update_layout(
-    title="2D Cross-Section (X-Y Plane)",
-    xaxis_title="X Position (m)",
-    yaxis_title="Y Position (m)",
-    height=500,
-    xaxis=dict(range=[-r0*1.5, r0*1.5]),
-    yaxis=dict(range=[-r0*1.5, r0*1.5]),
+    title="2D Cross-Section (X-Y)",
+    xaxis=dict(range=[-r0*1.5, r0*1.5]), yaxis=dict(range=[-r0*1.5, r0*1.5]),
+    height=500
 )
 
-# --- LAYOUT RENDERING ---
+# Render
 col1, col2 = st.columns([2, 1])
-
-with col1:
-    st.plotly_chart(fig, use_container_width=True)
-
+with col1: st.plotly_chart(fig, use_container_width=True)
 with col2:
     st.plotly_chart(fig_2d, use_container_width=True)
-    st.markdown("### Simulation Status")
+    st.markdown("### Status")
     for ion in ions:
-        status_icon = "✅" if ion["status"] == "Transmitted" else "❌"
-        st.write(f"{status_icon} **{ion['name']}**: {ion['status']}")
-
-st.markdown("---")
-st.subheader("💡 The Physics Behind It")
-st.latex(r"""
-\frac{d^2u}{dt^2} \pm \frac{2e}{mr_0^2} (U + V \cos(\omega t)) u = 0
-""")
-st.markdown("""
-The simulation solves the **Mathieu Equations** (shown above) for $x$ and $y$ motion. 
-* **$U$ (DC Voltage):** Tries to destabilize heavy ions in one direction and light ions in the other.
-* **$V$ (RF Voltage):** Creates the oscillation that stabilizes specific masses.
-* **Filter Action:** Only ions with a specific Mass-to-Charge ($m/z$) ratio have a stable trajectory (bounded oscillation) and reach the detector. All others oscillate too wildly and hit the rods (represented by the dashed circle).
-""")
+        st.write(f"{'✅' if ion['status'] == 'Transmitted' else '❌'} **{ion['name']}**: {ion['status']}")
