@@ -56,17 +56,17 @@ U, V = 0.0, 0.0
 
 if control_mode == "Manual Independent":
     st.sidebar.markdown("**Manual Mode:** Adjust DC and RF independently.")
-    U = st.sidebar.number_input("DC Voltage (U) [Volts]", value=70.0, step=0.5)
-    V = st.sidebar.number_input("RF Voltage (V) [Volts]", value=415.0, step=1.0)
+    U = st.sidebar.number_input("DC Voltage (U) [Volts]", value=30.0, step=0.5)
+    V = st.sidebar.number_input("RF Voltage (V) [Volts]", value=180.0, step=1.0)
 
 elif control_mode == "Linked Scan (Ratio)":
     st.sidebar.markdown("**Scan Mode:** Adjusting RF automatically sets DC to maintain constant resolution.")
     
     # Calculate the ratio needed for the apex
-    scan_ratio = TARGET_A / (2 * TARGET_Q) # Approx 0.1678
+    scan_ratio = TARGET_A / (1.9 * TARGET_Q) # Approx 0.1678 Original scalar was 2.0, lowered to 1.9 to decrease simulated resolution
     
     # Slider for V (RF)
-    V = st.sidebar.slider("RF Voltage (V)", min_value=0.0, max_value=3000.0, value=415.0, step=1.0)
+    V = st.sidebar.slider("RF Voltage (V)", min_value=0.0, max_value=3000.0, value=180.0, step=0.25)
     # Calculate U based on fixed ratio
     U = V * scan_ratio
     
