@@ -63,7 +63,7 @@ elif control_mode == "Linked Scan (Ratio)":
     st.sidebar.markdown("**Scan Mode:** Adjusting RF automatically sets DC to maintain constant resolution.")
     
     # Calculate the ratio needed for the apex
-    scan_ratio = 0.9 * TARGET_A / (2.0 * TARGET_Q) # Approx 0.1678 Reduced ratio by mult 0.9
+    scan_ratio = 0.95 * TARGET_A / (2.0 * TARGET_Q) # Approx 0.1678 Reduced ratio by mult 0.9
     
     # Slider for V (RF)
     V = st.sidebar.slider("RF Voltage (V)", min_value=0.0, max_value=3000.0, value=180.0, step=0.25)
